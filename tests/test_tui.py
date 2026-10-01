@@ -304,6 +304,24 @@ class TestKeys:
 
         assert app.world.day == 2
 
+    def test_the_c_key_puts_the_keys_in_the_chat_box(self) -> None:
+        """Tab walks through every widget on the way to the box; c goes straight there."""
+        seen = {}
+        app = build_app()
+
+        async def autopilot(pilot) -> None:
+            for _ in range(20):
+                await pilot.pause()
+            seen["before"] = app.say.has_focus
+            await pilot.press("c")
+            await pilot.pause()
+            seen["after"] = app.say.has_focus
+            app.exit()
+
+        app.run(headless=True, auto_pilot=autopilot)
+
+        assert seen == {"before": False, "after": True}
+
 
 class TestBusyIndicator:
     def test_a_second_press_does_not_start_a_second_day(self) -> None:
@@ -814,6 +832,24 @@ class TestKeysWhileTyping:
         app.run(headless=True, auto_pilot=autopilot)
 
         assert seen == {"day": 0, "box": "n"}
+
+    def test_typing_c_keeps_the_keys_in_the_box(self) -> None:
+        """The shortcut has to stay out of the way once the box has focus."""
+        seen = {}
+        app = build_app()
+
+        async def autopilot(pilot) -> None:
+            app.say.focus()
+            await pilot.press("c")
+            await pilot.press("c")
+            await pilot.pause()
+            seen["box"] = app.say.value
+            seen["focused"] = app.say.has_focus
+            app.exit()
+
+        app.run(headless=True, auto_pilot=autopilot)
+
+        assert seen == {"box": "cc", "focused": True}
 
 
 class TestAutomaticRun:

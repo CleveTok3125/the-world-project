@@ -70,6 +70,7 @@ class WorldApp(App[None]):
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("n", "next_day", "Next day"),
         ("space", "next_day", "Next day"),
+        ("c", "focus_chat", "Chat"),
         ("q", "quit", "Quit"),
     ]
 
@@ -313,6 +314,14 @@ class WorldApp(App[None]):
         self._refresh()
         if self.remaining > 0:
             self.call_later(self.action_next_day)
+
+    def action_focus_chat(self) -> None:
+        """Hand the keys to the chat box.
+
+        Reaching the box with tab means walking through every table on the way, and
+        the tables take focus whether or not they can be typed into.
+        """
+        self.say.focus()
 
     def action_next_day(self) -> None:
         """Start simulating one more day without blocking the interface.
@@ -618,10 +627,11 @@ def _amount(value: float) -> str:
 
 SETUP_HINT = (
     "Give your subordinate a change before it starts, "
-    "then press n to begin. Click the box, or press tab, to type; escape lets go again."
+    "then press n to begin. Press c to type, escape to let go again."
 )
 RUNNING_HINT = (
-    "Keep steering while it runs: type a change in the box, escape to let go, n for the next day."
+    "Keep steering while it runs: press c to type a change, "
+    "escape to let go, n for the next day."
 )
 BAR_WIDTH = 8
 
