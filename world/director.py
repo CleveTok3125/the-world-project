@@ -227,16 +227,16 @@ class Reply:
     prompt: str = ""
     broke: str | None = None
 
-    def line(self) -> str:
-        """The whole reply as the lines a chat shows.
+    def parts(self) -> tuple[str, tuple[str, ...]]:
+        """The reply split into what the model said and the record of what it did.
 
-        A refusal is shown as a refusal rather than as one more line of narration,
-        because a request that did not do what it said has to read as a request
-        that failed. Saying the same thing once is enough.
+        The two are kept apart because they are read differently: the sentence is
+        the one to listen to and the lines under it are a record of which setting
+        moved and what it replaced.
         """
-        out = [self.said] if self.said else []
-        out += [change.line() for change in self.applied]
-        out += self.held
+        said = self.said
+        logs = [change.line() for change in self.applied]
+        logs += self.held
         problems = _said_once(self.refused)
         if self.unmapped:
             problems = [
@@ -244,12 +244,26 @@ class Reply:
                 for part in _said_once(self.unmapped)
             ] + problems
         if problems:
-            out.append("")
-            out.append("Not done:")
-            out += problems
+            logs += ["Not done:", *problems]
         if self.broke is not None:
-            out.append(self.broke)
-        return "\n".join(out) if out else "Nothing to change."
+            logs.append(self.broke)
+        return said, tuple(logs)
+
+    def line(self) -> str:
+        """The whole reply as the lines a chat shows.
+
+        A refusal is shown as a refusal rather than as one more line of narration,
+        because a request that did not do what it said has to read as a request
+        that failed. Saying the same thing once is enough.
+        """
+        said, logs = self.parts()
+        if said:
+            out = [said]
+            if logs:
+                out.append("")
+            out += logs
+            return "\n".join(out)
+        return "\n".join(logs) if logs else "Nothing to change."
 
     def worked(self) -> bool:
         """Whether anything at all came of the request."""
@@ -291,8 +305,9 @@ class Director:
     """Reads an instruction and carries out what it can safely."""
 
     SYSTEM_PROMPT = (
-        "You run a simulation of villages that barter with each other. "
-        "The user describes a change they want. Answer with JSON only.\n"
+        "You are a subordinate looking after a simulation of villages that barter "
+        "with each other. The one you report to describes a change they want. "
+        "Answer with JSON only.\n"
         'Shape: {"reply": "what you did, in one or two plain sentences",\n'
         '        "changes": [{"village": "Farmers", "field": "population", "value": 20}],\n'
         '        "schedule": [{"day": 12, "label": "the drought",\n'

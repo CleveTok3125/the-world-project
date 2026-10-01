@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+from textual.widgets import DataTable
 
 from tests.fakes import FakeModel, FakeNarrator, change, plan
 from world.director import Director
@@ -83,6 +84,18 @@ def summary_text(app: WorldApp) -> str:
 class TestComposition:
     def test_it_builds_without_a_display(self) -> None:
         assert isinstance(build_app(), WorldApp)
+
+    def test_the_running_day_and_the_settings_sit_in_columns_of_their_own(self) -> None:
+        seen = {}
+
+        def check(app: WorldApp) -> None:
+            seen["left"] = [t.id for t in app.query_one("#left").query(DataTable)]
+            seen["right"] = [t.id for t in app.query_one("#right").query(DataTable)]
+
+        drive(build_app(), check=check)
+
+        assert seen["left"] == ["stock", "trades", "flow"]
+        assert seen["right"] == ["settings", "world_settings", "summary"]
 
 
 class TestStepping:
@@ -501,21 +514,123 @@ class TestTheChatScrolls:
             ),
         )
 
-        drive(
-            app,
-            say=("one", "two"),
-            check=lambda a: seen.update(
-                turns=len(a.talk),
-                widgets=len(a.chat_panel.children),
-                scrollable=a.chat_panel.is_scrollable,
-                at_bottom=a.chat_panel.scroll_offset.y == a.chat_panel.max_scroll_y,
-            ),
-        )
+        async def autopilot(pilot) -> None:
+            for text in ("one", "two"):
+                app.say_in(text)
+                for _ in range(300):
+                    await pilot.pause()
+                    if not app.busy:
+                        break
+                # The scroll is asked for after a refresh, so wait for it to land
+                # rather than counting pauses and hoping.
+                for _ in range(60):
+                    await pilot.pause()
+                    if app.chat_panel.scroll_offset.y == app.chat_panel.max_scroll_y:
+                        break
+            seen["turns"] = len(app.talk)
+            seen["widgets"] = len(app.chat_panel.children)
+            seen["scrollable"] = app.chat_panel.is_scrollable
+            seen["at_bottom"] = app.chat_panel.scroll_offset.y == app.chat_panel.max_scroll_y
+            app.exit()
+
+        app.run(headless=True, auto_pilot=autopilot)
 
         assert seen["turns"] == 4
         assert seen["widgets"] == seen["turns"] + 1
         assert seen["scrollable"] is True
         assert seen["at_bottom"] is True
+
+    def test_the_narration_arrives_as_the_newest_turn_of_the_conversation(self) -> None:
+        """The narrator writes into the same chat the instructions go into."""
+        seen = {}
+        app = build_app()
+
+        drive(
+            app,
+            days=2,
+            say=("talk less",),
+            check=lambda a: seen.update(
+                turns=len(a.chat_panel.children),
+                last=str(a.chat_panel.children[-1].content),
+                narration=a.narration,
+            ),
+        )
+
+        assert seen["narration"]
+        assert seen["last"] == f"[The Narrator] {seen['narration']}"
+
+    def test_each_turn_is_one_blank_line_apart_and_names_who_is_speaking(self) -> None:
+        seen = {}
+        world = build_default_world()
+        app = build_app(
+            world=world,
+            director=Director(
+                FakeModel(
+                    plan(change("Miners", "production.Minerals", 5.0)),
+                    plan(reply="Mines thinned."),
+                ),
+                world,
+            ),
+            days=1,
+        )
+
+        drive(
+            app,
+            say=("cut the mines",),
+            check=lambda a: seen.update(
+                turns=[str(t.content) for t in a.chat_panel.children if "turn" in t.classes],
+            ),
+        )
+
+        assert seen["turns"][0] == "> cut the mines"
+        assert seen["turns"][1].startswith("[The Subordinate] ")
+        assert seen["turns"][2].startswith("[The Narrator] ")
+        turns = app_narrations = seen["turns"]
+        assert all(not turn.startswith(">") for turn in turns[1:])
+        assert app_narrations
+
+    def test_the_record_of_a_change_is_a_blank_line_away_and_dim(self) -> None:
+        """What a turn changed is a record, not something said, and reads as one."""
+        seen = {}
+        world = build_default_world()
+        app = build_app(
+            world=world,
+            director=Director(
+                FakeModel(plan(change("Miners", "production.Minerals", 5.0), reply="Done.")),
+                world,
+            ),
+        )
+
+        drive(app, say=("cut the mines",), check=lambda a: seen.update(
+            turn=str(a.chat_panel.children[-1].content),
+        ))
+
+        said, _, record = seen["turn"].partition("\n\n")
+        assert said == "[The Subordinate] Done."
+        assert record == "Miners production.Minerals: 20 -> 5"
+
+    def test_a_narrow_window_scrolls_across_rather_than_cutting_the_numbers(self) -> None:
+        """The barters table is wider than a narrow column, so it must scroll.
+
+        The columns keep their own width; a table that does not fit scrolls inside
+        itself so a quantity is read whole rather than clipped at the column edge.
+        """
+        seen = {}
+
+        async def autopilot(pilot) -> None:
+            for _ in range(80):
+                await pilot.pause()
+            barters = app.query_one("#trades")
+            seen["panel"] = app.query_one("#left").region.width
+            seen["table"] = barters.region.width
+            seen["scrolls_across"] = barters.max_scroll_x
+            app.exit()
+
+        app = build_app(days=3)
+        app.run(headless=True, auto_pilot=autopilot, size=(70, 40))
+
+        assert seen["table"] <= seen["panel"]
+        assert seen["scrolls_across"] > 0
 
 
 class TestSettingsAreShown:

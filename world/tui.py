@@ -1,14 +1,15 @@
-"""The terminal interface: tables, narration and a running summary of the run."""
+"""The terminal interface: tables above, and one conversation below."""
 
 from __future__ import annotations
 
 import threading
 from typing import ClassVar
 
+from rich.markup import escape
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Grid, Horizontal, ScrollableContainer, Vertical, VerticalScroll
 from textual.widgets import DataTable, Footer, Input, LoadingIndicator, Static
 
 from world.director import Director
@@ -20,6 +21,13 @@ from world.world import DayReport, World, build_default_world
 
 TITLE = "The World Project"
 SUB_TITLE = "n or space: next day    q: quit"
+SUBORDINATE = "subordinate"
+NARRATOR = "narrator"
+
+
+def titled(role: str) -> str:
+    """A role as it is shown, so one place decides how it reads."""
+    return f"The {role.capitalize()}"
 
 
 class WorldApp(App[None]):
@@ -42,18 +50,20 @@ class WorldApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
     #banner { height: auto; padding: 0 1; }
-    #narration { height: auto; max-height: 14; padding: 0 1; }
     .heading { height: 1; padding: 0 1; color: $text-muted; }
-    #narration { min-height: 6; }
-    #narration.loading { border: round $accent; }
-    #tables { height: 1fr; overflow-y: auto; }
+    #tables { height: 1fr; grid-size: 2 1; grid-columns: 55fr 44fr; }
     #settings { height: auto; }
     #world_settings { height: auto; }
     #flow { height: auto; }
     #console { height: 33%; border-top: round $panel; }
     #chat { height: 1fr; padding: 0 1; }
+    #chat > .turn { margin-bottom: 1; padding: 0 1; }
+    #chat > .turn.you { background: $boost; }
+    #chat > .turn.subordinate { background: $panel; }
+    #chat > .turn.narrator { background: $surface; }
     #thinking { height: auto; padding: 0 1; }
     #thinking > LoadingIndicator { width: auto; }
+    #thought { margin-left: 2; }
     #prompt { height: auto; padding: 0 1; color: $text-muted; }
     """
 
@@ -80,6 +90,7 @@ class WorldApp(App[None]):
         self.book = RunLog()
         self.last_report: DayReport | None = None
         self.seed: int | None = None
+        self.narrated = ""
         self.remaining = days
         self.talk: list[str] = []
 
@@ -113,13 +124,8 @@ class WorldApp(App[None]):
 
     @property
     def narration(self) -> str:
-        """The prose written about the day most recently simulated."""
-        return str(self.narration_panel.content)
-
-    @property
-    def narration_panel(self) -> Static:
-        """The panel holding the prose, which carries the busy marker."""
-        return self.query_one("#narration", Static)
+        """The prose the narrator wrote about the day most recently simulated."""
+        return self.narrated
 
     @property
     def status(self) -> Static:
@@ -133,7 +139,7 @@ class WorldApp(App[None]):
 
     @property
     def summary(self) -> DataTable:
-        """The table of how the whole run has gone."""
+        """How the whole run went, as a measure and its value."""
         return self.query_one("#summary", DataTable)
 
     @property
@@ -168,21 +174,22 @@ class WorldApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static(self._banner_text(), id="banner")
-        yield Static("", id="narration", markup=False)
         yield Static("", id="status", classes="heading", markup=False)
-        with Vertical(id="tables"):
-            yield Static("SETTINGS", classes="heading")
-            yield DataTable(id="settings")
-            yield Static("WORLD", classes="heading")
-            yield DataTable(id="world_settings")
-            yield Static("STOCK", classes="heading")
-            yield DataTable(id="stock")
-            yield Static("BARTERS", classes="heading")
-            yield DataTable(id="trades")
-            yield Static("LAST DAY", classes="heading")
-            yield DataTable(id="flow")
-            yield Static("RUN SUMMARY", classes="heading")
-            yield DataTable(id="summary")
+        with Grid(id="tables"):
+            with ScrollableContainer(id="left"):
+                yield Static("STOCK", classes="heading")
+                yield DataTable(id="stock")
+                yield Static("BARTERS", classes="heading")
+                yield DataTable(id="trades")
+                yield Static("LAST DAY", classes="heading")
+                yield DataTable(id="flow")
+            with ScrollableContainer(id="right"):
+                yield Static("SETTINGS", classes="heading")
+                yield DataTable(id="settings")
+                yield Static("WORLD", classes="heading")
+                yield DataTable(id="world_settings")
+                yield Static("RUN SUMMARY", classes="heading")
+                yield DataTable(id="summary")
         with Vertical(id="console"):
             with VerticalScroll(id="chat"):
                 yield Static("Nobody is talking yet.", id="quiet", markup=False)
@@ -234,7 +241,7 @@ class WorldApp(App[None]):
         if not self._claim():
             return
         self.say.disabled = True
-        self._thinking(True)
+        self._thinking(True, SUBORDINATE)
         self._say(f"> {text}")
         self.status.update("Working on it...")
         self._ask(text)
@@ -264,24 +271,32 @@ class WorldApp(App[None]):
         self._release()
         self._thinking(False)
         self.say.disabled = False
-        self._say(reply.line())
+        said, logs = reply.parts()
+        self._say(said, SUBORDINATE, logs)
         self.status.update("Ready.")
         self._refresh()
         self.chat_hint.update(RUNNING_HINT)
 
-    def _say(self, text: str) -> None:
+    def _say(self, text: str, who: str = "", logs: tuple[str, ...] = ()) -> None:
         """Add one turn to the conversation and follow it down.
 
         One widget per turn, since a single static has no scrollable size to measure.
         The scroll waits for the next refresh because the turn has to be laid out
-        first.
+        first. ``who`` names whoever is speaking, except for a turn of your own,
+        which carries the ``>`` you typed and needs no name. ``logs`` is the record
+        of what a turn changed, which is a line away from the sentence and dim,
+        because it is a record rather than something said.
         """
-        self.talk.append(text)
-        chat = self.chat_panel
+        self.talk.append("\n\n".join((text, *logs)))
         quiet = self.query_one("#quiet", Static)
         quiet.display = False
-        chat.mount(Static(text, markup=False, classes="turn"))
-        chat.call_after_refresh(chat.scroll_end, animate=False)
+        name = titled(who)
+        said = Text.from_markup(f"[bold cyan]\\[{name}][/bold cyan] {escape(text)}") if who else Text(text)
+        if logs:
+            said.append("\n\n")
+            said.append(Text("\n".join(logs), style="dim"))
+        self.chat_panel.mount(Static(said, classes=f"turn {who or 'you'}"))
+        self._follow_chat()
 
     def on_mount(self) -> None:
         self._thinking(False)
@@ -307,7 +322,7 @@ class WorldApp(App[None]):
         if not self._claim():
             return
         self.advancing = True
-        self.narration_panel.loading = True
+        self._thinking(True)
         self.status.update("Simulating the next day...")
         self._simulate()
 
@@ -344,9 +359,11 @@ class WorldApp(App[None]):
             if not handed_back:
                 self._release()
 
-    def _thinking(self, working: bool) -> None:
-        """Show or hide the marker that says the narrator is still working."""
+    def _thinking(self, working: bool, who: str = NARRATOR) -> None:
+        """Show or hide the marker that says whoever is working is still working."""
         self.query_one("#thinking").display = working
+        if working:
+            self.query_one("#thought").update(f"{titled(who)} is thinking...")
 
     def _failed(self, what: str, problem: Exception) -> None:
         """Report that a worker could not finish, and give the permit back."""
@@ -360,9 +377,9 @@ class WorldApp(App[None]):
         """Put a finished day on screen."""
         self._release()
         self.advancing = False
-        self.narration_panel.loading = False
+        self._thinking(False)
         if failure:
-            self.narration_panel.update(f"The narrator fell silent: {failure}")
+            self._publish_narration(f"The narrator fell silent: {failure}")
             self.status.update("Day not narrated.")
             self._keep_going()
             return
@@ -378,7 +395,7 @@ class WorldApp(App[None]):
             )
         )
 
-        self.narration_panel.update("\n".join(lines))
+        self._publish_narration("\n".join(lines))
         self.banner.update(self._banner_text())
         self.status.update(f"Day {report.day} done.")
         self._record(report, state, lines)
@@ -411,7 +428,21 @@ class WorldApp(App[None]):
         self._fill_flow()
         self._fill_summary()
 
+    def _follow_chat(self) -> None:
+        """Scroll to the newest turn, once the layout has caught up."""
+        self.chat_panel.call_after_refresh(self.chat_panel.scroll_end, animate=False)
+
+    def _publish_narration(self, prose: str) -> None:
+        """Show what the narrator wrote, as the newest turn of the conversation.
+
+        Mounted rather than written into a fixed panel, so the day reads the same
+        way a reply to an instruction does.
+        """
+        self.narrated = prose
+        self._say(prose, NARRATOR)
+
     def _fill_summary(self) -> None:
+        """Fill the run summary table in the right column."""
         table = self.summary
         table.clear()
         for measure, value in self.book.summary_rows():
@@ -580,7 +611,7 @@ def _amount(value: float) -> str:
 
 
 SETUP_HINT = (
-    "Tell the narrator how the world should be before it starts, "
+    "Give your subordinate a change before it starts, "
     "then press n to begin. Click the box, or press tab, to type; escape lets go again."
 )
 RUNNING_HINT = (

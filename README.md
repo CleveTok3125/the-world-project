@@ -20,11 +20,16 @@ python run.py --days 30 --log run.txt        # write the whole run to a file
 `python run.py` always opens a full screen interface built with `textual`, and it
 opens on a chat rather than on the tables.
 
+- The tables sit in two columns above: the day that just ran on the left, the
+  settings and the run summary on the right.
 - The chat takes up the lower third of the window and follows itself down to the
   newest turn unless you scroll up to read back.
-- A marker shows in it while the narrator is thinking.
-- The world can be shaped before a single day is simulated, and the chat stays open
-  afterwards so a running world can still be steered.
+- A marker shows in it while the day is being simulated.
+- You give your subordinate a change in the box and they answer as
+  `[The Subordinate]`. The narrator writes the day into the same chat as
+  `[The Narrator]`, so an instruction, its answer and the story all sit together.
+- Each turn carries its own background, and the marker above the box says whichever
+  of the two is working.
 - `n` or `space` moves to the next day, `q` leaves.
 - Typing takes the keys while the chat box has focus, so `escape` hands them back.
 
@@ -59,7 +64,7 @@ run can be watched while it goes, and the run summary is written when the
 interface closes. A name ending in `.jsonl` gives one JSON object per day instead
 of prose.
 
-The run summary, which the interface keeps on screen and the log closes with, says
+The run summary, kept in the right column and repeated at the end of the log, says
 how many days went in balance, which day was the worst, and the verdict on the
 final one.
 
