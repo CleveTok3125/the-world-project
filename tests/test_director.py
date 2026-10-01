@@ -29,8 +29,18 @@ class FakeModel:
             raise NoJSONAnswer(user, answer) from None
 
 
-def plan(*changes: dict, reply: str = "done", schedule: list | None = None) -> dict:
-    return {"reply": reply, "changes": list(changes), "schedule": schedule or []}
+def plan(
+    *changes: dict,
+    reply: str = "done",
+    schedule: list | None = None,
+    asks: bool = False,
+) -> dict:
+    return {
+        "reply": reply,
+        "asks": asks,
+        "changes": list(changes),
+        "schedule": schedule or [],
+    }
 
 
 def change(village: str | None, field: str, value: object) -> dict:
@@ -539,6 +549,48 @@ class TestABrokenAnswer:
 
 
 class TestRefusingRatherThanGuessing:
+    def test_a_reply_that_asks_changes_nothing(self) -> None:
+        """Asking and doing in one turn leaves a reader unable to tell which."""
+        world = build_default_world()
+        asked = plan(
+            change(None, "trade_chance", 0.0),
+            reply="They stop meeting, I assume?",
+            asks=True,
+        )
+
+        reply = Director(FakeModel(asked), world).follow("stop the villages meeting")
+
+        assert reply.applied == []
+        assert world.trade_chance == 0.6
+        assert "question" in "\n".join(reply.refused)
+
+    def test_a_rhetorical_question_is_not_an_order_to_stop(self) -> None:
+        """A raised eyebrow is not a question, and must not leave an order undone."""
+        world = build_default_world()
+        rhetorically = plan(
+            change("Farmers", "population", 20),
+            reply="Twenty people for the Farmers? That will lift them.",
+        )
+
+        reply = Director(FakeModel(rhetorically), world).follow("give the Farmers twenty people")
+
+        assert len(reply.applied) == 1
+        assert world.village("Farmers").population == 20
+
+    def test_an_order_still_goes_through_when_nothing_asked(self) -> None:
+        world = build_default_world()
+        ordered = plan(change(None, "trade_chance", 0.0), reply="They stop meeting.")
+
+        reply = Director(FakeModel(ordered), world).follow("stop the villages meeting")
+
+        assert len(reply.applied) == 1
+        assert world.trade_chance == 0.0
+
+    def test_a_reply_must_not_mention_a_simulator(self) -> None:
+        """The people in this world do not know they are in one."""
+        assert "simulation" not in Director.SYSTEM_PROMPT.lower()
+        assert "simulator" not in Director.SYSTEM_PROMPT.lower()
+
     def test_a_part_the_model_cannot_express_is_shown_back(self) -> None:
         world = build_default_world()
         answer = {
@@ -660,4 +712,4 @@ class TestWhatTheModelIsTold:
 
         sent = json.loads(model.prompts[0].split("\n\nThe user says")[0])
         assert sent["today"] == 2
-        assert sent["state"]["day_simulated"] == 1
+        assert sent["state"]["day"] == 1

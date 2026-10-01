@@ -50,9 +50,19 @@ class FakeModel:
             raise NoJSONAnswer(user, answer) from None
 
 
-def plan(*changes: dict, reply: str = "done", schedule: list | None = None) -> dict:
+def plan(
+    *changes: dict,
+    reply: str = "done",
+    schedule: list | None = None,
+    asks: bool = False,
+) -> dict:
     """Build the shape a director expects back from a model."""
-    return {"reply": reply, "changes": list(changes), "schedule": schedule or []}
+    return {
+        "reply": reply,
+        "asks": asks,
+        "changes": list(changes),
+        "schedule": schedule or [],
+    }
 
 
 def change(village: str | None, field: str, value: object) -> dict:

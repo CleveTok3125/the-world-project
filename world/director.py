@@ -291,11 +291,14 @@ class Plan:
 
     Attributes:
         said: What the model said it was doing.
+        asks: Whether the model was asking rather than telling, in which case
+            nothing is carried out however many changes it sent alongside.
         now: Changes to apply straight away.
         later: Changes held back for a named day.
     """
 
     said: str = ""
+    asks: bool = False
     now: list[Change] = field(default_factory=list)
     later: list[ScheduledChange] = field(default_factory=list)
     unmapped: list[str] = field(default_factory=list)
@@ -305,16 +308,33 @@ class Director:
     """Reads an instruction and carries out what it can safely."""
 
     SYSTEM_PROMPT = (
-        "You are a subordinate looking after a simulation of villages that barter "
-        "with each other. The one you report to describes a change they want. "
+        "You are a subordinate in a world of villages that barter with each "
+        "other. The one you report to tells you how they want it changed. "
         "Answer with JSON only.\n"
-        'Shape: {"reply": "what you did, in one or two plain sentences",\n'
+        'Shape: {"reply": "one or two sentences, reacting to the order as a person would",\n'
+        '        "asks": false,\n'
         '        "changes": [{"village": "Farmers", "field": "population", "value": 20}],\n'
         '        "schedule": [{"day": 12, "label": "the drought",\n'
         '                     "changes": [{"village": "Farmers",\n'
         '                                  "field": "production.Agriculture", "value": 2}]}],\n'
         '        "unmapped": ["the part of the request you could not express"]}\n'
         "Rules:\n"
+        "- You have a view of the orders you are given, and you are allowed to "
+        "show it. Weary, amused, doubtful, relieved, willing, exasperated, "
+        "impressed. A subordinate who only confirms is a machine, and this one is "
+        "a person with a job.\n"
+        "- Spend the reply on that reaction. Say how the order strikes you, not "
+        "what you did about it; the record below already carries the figures.\n"
+        "- Set asks to true only when you are genuinely asking for the order to be "
+        "spelled out, and put no changes in the changes list. Asking changes "
+        "nothing. Set it to false whenever you are working, however much you ask "
+        "something rhetorically or restate what you were told in your own words: "
+        "a raised eyebrow is not a question, and treating one as a question "
+        "leaves an order undone.\n"
+        "- Keep it honest. Never claim a change that is not in the record, and "
+        "never promise one either. Saying you will see to something, or that you "
+        "will look into it, is a promise the reader has to hold you to, so do "
+        "neither. If you could not do it, say it did not happen.\n"
         "- Values are the new total, never an amount to add or subtract. "
         "To halve something, work out the current value and give the new one.\n"
         "- A setting of the whole world, such as trade_chance, needs "
@@ -372,6 +392,12 @@ class Director:
         plan = self._read(answer, reply)
         reply.said = plan.said
         reply.unmapped = list(plan.unmapped)
+        if plan.asks:
+            reply.refused.append(
+                "That was a question, so nothing was changed. "
+                "Say it as an order and it will be carried out."
+            )
+            return reply
         self._carry_out(plan, reply)
         return reply
 
@@ -415,7 +441,7 @@ class Director:
                 },
             }
         return {
-            "day_simulated": self.world.day,
+            "day": self.world.day,
             "time_per_day": self.world.time_per_day,
             "trade_chance": self.world.trade_chance,
             "max_rounds": self.world.max_rounds,
@@ -428,7 +454,11 @@ class Director:
             reply.broke = "That was not a set of changes. Say it again."
             return Plan()
         said = answer.get("reply")
-        plan = Plan(said=said if isinstance(said, str) else "")
+        asking = answer.get("asks")
+        plan = Plan(
+            said=said if isinstance(said, str) else "",
+            asks=asking is True,
+        )
         for raw in _entries(answer, "changes"):
             change = self._read_change(raw, reply)
             if change is not None:
