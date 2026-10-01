@@ -248,7 +248,7 @@ class WorldSummary:
                 + (f", missing {village.missing:.1f} units." if village.missing else ".")
                 for village in self.villages
             ],
-            "trades": [trade.sentence() for trade in self.trades],
+            "dealings": _dealings(self),
             "shortages": [
                 f"{shortage.name} went without "
                 + ", ".join(
@@ -258,6 +258,29 @@ class WorldSummary:
                 for shortage in self.shortages
             ],
         }
+
+
+def _dealings(summary: WorldSummary) -> str:
+    """The day's bartering as one line, so a narrator need not count it.
+
+    The individual trades are left out on purpose. A model handed six of them
+    writes six sentences, which is a ledger rather than a day. What is worth
+    saying is how the dealing went overall and whether one side paid dearer than
+    the rest.
+    """
+    agreed = [
+        trade
+        for trade in summary.trades
+        if trade.agreed and trade.given_goods is not None
+    ]
+    if not agreed:
+        return "Nothing was agreed between them today."
+    dearest = max(agreed, key=lambda trade: trade.rate)
+    return (
+        f"{len(agreed)} barters were agreed today. The dearest was "
+        f"{dearest.proposer} handing over {dearest.given_goods.label} at "
+        f"{dearest.rate:.1f} per unit to {dearest.responder}."
+    )
 
 
 def _deprived_of(village: Village, unmet: dict[Goods, float]) -> float:
@@ -437,13 +460,32 @@ class LLMNarrator:
         "You are the narrator of a small barter economy with three villages.\n"
         "Rewrite the day given to you as flowing prose of two to four sentences.\n"
         "Rules:\n"
+        "- Decide what the day was actually about and write about that. Say what "
+        "carried weight and leave the rest out: a village short of what it needs "
+        "is worth a sentence, a village's reserve is not, and neither is a price "
+        "that barely moved. An uneventful day is one short sentence.\n"
+        "- Do not walk through the lines you are given in order. That reads as a "
+        "report. Pick the one thread that carries the day and tell that, and let "
+        "the rest go unmentioned.\n"
+        "- Do not narrate the barters one by one. Nobody wants to read three "
+        "sentences of who sold what to whom. Speak of the day's dealing in a "
+        "single general way and only when there is something to say: that it was "
+        "busy, that it was quiet, that one village was getting a price it did not "
+        "like. If nothing about the dealing stands out, leave it out.\n"
+        "- Keep the tone level. Report what the day was; do not editorialise about "
+        "it, and do not reach for drama the figures do not support.\n"
         "- Never repeat the input sentences word for word, put them in your own words.\n"
         "- Keep every direction of every trade exactly as given: whoever gave a "
         "good is the one who received the other good.\n"
-        "- Write every quantity as the digits you are given, so 20.0 stays 20.0. "
-        "Never spell a number out as a word.\n"
-        "- Name the goods exactly as written, so Minerals stays Minerals and "
-        "never becomes ores, rock or metal.\n"
+        "- You need not mention every village, trade or figure you are given. "
+        "Leave out whatever carries no weight; silence is better than a complete "
+        "inventory of a day that was not interesting.\n"
+        "- Any quantity you do write is written as digits, exactly as it was given "
+        "to you, so 20.0 stays 20.0. Never spell a number out as a word and never "
+        "round one to a tidier value.\n"
+        "- Name a commodity exactly as it is written, so Minerals stays Minerals "
+        "and never becomes ores, rock or metal. Keep the order the names were given "
+        "to you rather than rearranging them to fit a sentence.\n"
         "- Use only the villages, goods and numbers you are given, invent nothing.\n"
         "- A village that went without something did not receive it. Never turn a "
         "shortage into a delivery or a store into a gain.\n"
@@ -454,7 +496,16 @@ class LLMNarrator:
         "names a surplus. Weigh your closing sentence by that number yourself: 0.05 "
         "is a bad morning, 0.5 is a famine, 0.9 is a catastrophe. Never call a "
         "crisis a shortage or a catastrophe merely a shortage.\n"
-        "- Reply with prose only. No bullet points, no headings, no quotation marks."
+        "- Reply with prose only. No bullet points, no headings, no quotation marks.\n"
+        "A quiet day, where nothing was short and the rates barely moved:\n"
+        '"The three of them traded what they had and what they made, and none of "\n'
+        '"them fell short. The stores ended the day a little fuller than they "\n'
+        '"started. Nothing much came of it. The world in balance."\n'
+        "A day where two villages lost the same harvest:\n"
+        '"Farmers and Miners both went without 20.0 Handicrafts and the day did "\n'
+        '"not close cleanly. The Artisans had theirs to trade and could not "\n'
+        '"divide them. Two villages short of one thing is the world short of it. "\n'
+        '"A severe shortage of Handicrafts."'
     )
 
     def describe(self, summary: WorldSummary) -> list[str]:
@@ -482,25 +533,22 @@ def _as_lines(text: str) -> list[str]:
 
 
 def keeps_the_figures(lines: Sequence[str], summary: WorldSummary) -> bool:
-    """Whether a reply still carries every quantity and commodity name it was given.
+    """Whether every quantity a reply writes is one it was actually given.
 
-    A language model likes to turn ``20.0`` into ``twenty`` and ``Minerals`` into
-    ``ores``. The numbers are facts, so a reply that lost them is not usable.
+    A narrator is free to leave a day out of the telling, so this does not ask
+    whether the figures are all there. It asks the opposite question: is anything
+    in the reply a number nobody handed over. A language model likes to round
+    ``20.0`` down to ``20``, and an invented figure is a fact nobody checked.
+
+    It cannot catch a figure written out as a word, nor a commodity renamed, since
+    neither leaves a number behind to compare. Both are asked for in the prompt
+    instead, and a reply that breaks either reads wrong rather than reading wrong
+    quietly enough to slip past.
     """
     text = " ".join(lines)
-    numbers = {round(value, 1) for value in _written_numbers(text)}
-    for trade in summary.trades:
-        if not trade.agreed or trade.given_goods is None or trade.taken_goods is None:
-            continue
-        for quantity, goods in (
-            (trade.given, trade.given_goods),
-            (trade.taken, trade.taken_goods),
-        ):
-            if round(quantity, 1) not in numbers:
-                return False
-            if goods.label not in text:
-                return False
-    return True
+    handed_over = json.dumps(summary.to_payload(), indent=2)
+    given = {round(value, 1) for value in _written_numbers(handed_over)}
+    return all(round(value, 1) in given for value in _written_numbers(text))
 
 
 def _written_numbers(text: str) -> Iterator[float]:

@@ -266,7 +266,7 @@ class TestLLMNarrator:
         prompt = json.loads(captured["body"]["messages"][1]["content"])
         assert prompt["day"] == summary.day
         assert len(prompt["villages"]) == len(summary.villages)
-        assert len(prompt["trades"]) == len(summary.trades)
+        assert prompt["dealings"] == summary.to_payload()["dealings"]
 
     def test_explicit_generation_options_override_the_default_temperature(
         self, monkeypatch
@@ -405,18 +405,19 @@ class TestTradeSentence:
 
 
 class TestPayloadIsPlainProse:
-    def test_no_trade_appears_as_a_bare_field_pair(self) -> None:
+    def test_no_line_appears_as_a_bare_field_pair(self) -> None:
         summary = summary_after()
 
         payload = summary.to_payload()
 
-        assert all(isinstance(line, str) for line in payload["trades"])
+        assert isinstance(payload["dealings"], str)
         assert all(isinstance(line, str) for line in payload["villages"])
 
-    def test_the_payload_keeps_every_trade(self) -> None:
+    def test_the_payload_carries_the_day_as_a_whole_rather_than_its_barters(self) -> None:
+        """Six barters turn into six sentences, so they are counted, not listed."""
         summary = summary_after()
 
-        assert len(summary.to_payload()["trades"]) == len(summary.trades)
+        assert "trades" not in summary.to_payload()
 
     def test_the_payload_stays_small(self) -> None:
         import json as json_module
@@ -489,32 +490,28 @@ class TestReasoningModels:
 
 
 class TestLiteralValuesAreKept:
-    def test_a_reply_keeping_every_figure_is_accepted(self) -> None:
+    def test_a_reply_quoting_the_figures_is_accepted(self) -> None:
         summary = summary_after()
-        lines = [trade.sentence() for trade in summary.trades]
+        worst = next(t for t in summary.trades if t.agreed and t.rate)
 
-        assert keeps_the_figures(lines, summary)
+        assert keeps_the_figures([f"The day was busy; {worst.rate:.1f} per unit."], summary)
 
-    def test_a_reply_spelling_numbers_out_is_rejected(self) -> None:
-        summary = summary_after()
-
-        spelled = ["Farmers traded twenty minerals for thirteen agriculture."]
-
-        assert not keeps_the_figures(spelled, summary)
-
-    def test_a_reply_dropping_a_quantity_is_rejected(self) -> None:
+    def test_a_reply_may_leave_a_figure_out(self) -> None:
+        """A narrator that leaves a day out of the telling is doing its job."""
         summary = summary_after()
 
-        assert not keeps_the_figures(["Nothing was traded today."], summary)
+        assert keeps_the_figures(["Nothing worth the telling happened."], summary)
 
-    def test_a_reply_renaming_a_commodity_is_rejected(self) -> None:
+    def test_a_reply_quoting_a_figure_it_was_never_given_is_rejected(self) -> None:
         summary = summary_after()
-        goods = next(trade.given_goods for trade in summary.trades if trade.agreed)
-        renamed = str(goods.label).upper()
 
-        assert not keeps_the_figures(
-            [f"Farmers gave Miners 20.0 {renamed} and received 13.3 crops."], summary
-        )
+        assert not keeps_the_figures(["Farmers shipped 99.9 Minerals."], summary)
+
+    def test_a_reply_rounding_a_figure_away_from_it_is_rejected(self) -> None:
+        """A tidier number than the one given is still a figure nobody checked."""
+        summary = summary_after()
+
+        assert not keeps_the_figures(["Farmers shipped 7.5 Minerals."], summary)
 
     def test_a_refusal_needs_no_figures(self) -> None:
         world = build_default_world()
@@ -532,7 +529,7 @@ class TestLiteralValuesAreKept:
 
     def test_a_reply_that_loses_the_figures_is_refused(self, monkeypatch) -> None:
         body = json.dumps(
-            {"choices": [{"message": {"content": "Farmers traded twenty minerals."}}]}
+            {"choices": [{"message": {"content": "Farmers shipped 99.9 Minerals."}}]}
         )
         monkeypatch.setattr(
             urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(body)
@@ -544,7 +541,7 @@ class TestLiteralValuesAreKept:
 
     def test_a_reply_that_loses_the_figures_carries_the_bad_reply(self, monkeypatch) -> None:
         body = json.dumps(
-            {"choices": [{"message": {"content": "Farmers traded twenty minerals."}}]}
+            {"choices": [{"message": {"content": "Farmers shipped 99.9 Minerals."}}]}
         )
         monkeypatch.setattr(
             urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(body)
@@ -554,11 +551,11 @@ class TestLiteralValuesAreKept:
         with pytest.raises(LostTheFacts) as caught:
             narrator.describe(summary_after())
 
-        assert "twenty minerals" in str(caught.value)
+        assert "99.9 Minerals" in str(caught.value)
 
     def test_a_good_reply_is_kept_as_it_is(self, monkeypatch) -> None:
         summary = summary_after()
-        reply = " ".join(trade.sentence() for trade in summary.trades)
+        reply = f"A quiet day. The world in balance. {summary.day}"
         body = json.dumps({"choices": [{"message": {"content": reply}}]})
         monkeypatch.setattr(
             urllib.request, "urlopen", lambda request, timeout=None: FakeResponse(body)
@@ -897,7 +894,7 @@ class TestSituationReachesTheModel:
 
         def fake_urlopen(request, timeout=None):
             captured["body"] = json.loads(request.data)
-            return FakeResponse(CHAT_REPLY % "A day.")
+            return FakeResponse(CHAT_REPLY % "Farmers shipped 99.9 Minerals.")
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
         narrator = LLMNarrator(client=LLMClient(model="m"))
