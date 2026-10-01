@@ -17,6 +17,41 @@ python run.py --days 30 --seed 7 --noise 0.2
 python run.py --days 30 --log run.txt        # write the whole run to a file
 ```
 
+### The model server
+
+Every run needs a language model, and starts its own server unless one is already
+running. Two settings decide where it runs.
+
+| Variable | Meaning |
+| --- | --- |
+| `WORLD_NARRATOR_GPU_LAYERS` | How many layers to hold on a card. Leave unset and llama.cpp decides for itself, which means the card when it has one. Set it to `0` to stay on the processor. |
+| `WORLD_NARRATOR_MODEL_FILE` | Which GGUF to load. Unset picks the largest in `models/`. |
+
+A run needs no configuration to use a card: when `WORLD_NARRATOR_GPU_LAYERS` is
+unset the flag is not passed at all, and llama.cpp loads as many layers onto the
+card as fit. The variable is there to force a number, or `0` to refuse the card.
+
+Putting the model on a card is the largest single difference in how a run feels.
+With `gemma-4-E4B` on one laptop GPU, a day was narrated in **0.77s** against
+**7.79s** on the processor, about ten times quicker, so thirty days stop being a
+wait. The card backend has to be built in first:
+
+```bash
+cmake -S vendor/llama.cpp -B vendor/llama.cpp/build -DGGML_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=89
+cmake --build vendor/llama.cpp/build --target llama-server -j 6
+```
+
+Two things go wrong often enough to be worth naming. If `nvcc` cannot open an
+output file, `TMPDIR` points at a directory that does not exist. If cmake reports
+`/usr/bin/production`, `CMAKE_MAKE_PROGRAM` in the cache is not a real path; put
+`/usr/bin/make` back.
+
+`WORLD_NARRATOR_HOST` (default `127.0.0.1`) and `WORLD_NARRATOR_PORT` (default
+`8080`) decide where the server listens. To call it from another machine, listen on
+`0.0.0.0` and point that machine at it with `WORLD_NARRATOR_BASE_URL`. There is no
+authentication on that path, so keep it to a network you trust.
+
 `python run.py` always opens a full screen interface built with `textual`, and it
 opens on a chat rather than on the tables.
 
@@ -373,6 +408,10 @@ a village below survival.
 ## Development
 
 ```bash
-python -m pytest    # tests
-ruff check .        # lint
+python -m pytest             # tests
+ruff check .                 # lint
+python bench_model.py        # time the model, on a card or the processor
 ```
+
+`bench_model.py` narrates the same day three times and reports the median. Setting
+`WORLD_NARRATOR_GPU_LAYERS` picks which of the two runs it is.
