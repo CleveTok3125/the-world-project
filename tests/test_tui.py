@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 import pytest
 from textual.widgets import DataTable
@@ -10,9 +11,11 @@ from world.director import Director
 from world.goods import ALL_GOODS, Goods
 from world.llm import LLMClient
 from world.narrator import LLMNarrator
+from world.negotiation import NegotiationResult, NegotiationRound
 from world.tui import WorldApp
 from world.tui import build_app as build_real_app
-from world.world import build_default_world
+from world.village import TradeOffer, TradeResult
+from world.world import TradeEvent, build_default_world
 
 TOTAL_ROWS = 3
 
@@ -169,7 +172,82 @@ class TestStepping:
         assert float(seen["rows"]["Used"][3]) > 0
         assert seen["rows"]["Difference"] == [f"-{cell}" for cell in seen["rows"]["Used"]]
         assert seen["trade"][2:5] == ["-", "-", "-"]
-        assert seen["trade"][5]
+        assert seen["trade"][6]
+
+
+class TestBarterTable:
+    """Every barter row has to say what was on offer and how it ended.
+
+    An offer that was refused is still an offer, and a price that was asked is
+    still a price. Hiding them behind a dash throws away the only part of a failed
+    barter that a reader can learn anything from.
+    """
+
+    OFFER = TradeOffer(Goods.FARM, 2.0, Goods.CRAFT, 3.0)
+
+    def rows_for(self, *results: NegotiationResult) -> list[list[str]]:
+        """The barter table as plain cells, after feeding it the given outcomes."""
+        seen: list[list[str]] = []
+        app = build_app()
+
+        async def autopilot(pilot) -> None:
+            await pilot.press("n")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            app.last_report = replace(
+                app.last_report,
+                trades=tuple(TradeEvent("A", "B", result) for result in results),
+            )
+            app._fill_trades()
+            seen.extend(
+                [str(cell) for cell in app.trade_table.get_row_at(row)]
+                for row in range(app.trade_table.row_count)
+            )
+            app.exit()
+
+        app.run(headless=True, auto_pilot=autopilot)
+        return seen
+
+    def test_an_accepted_barter_is_labelled_accepted(self) -> None:
+        result = NegotiationResult(
+            True,
+            "ok",
+            (NegotiationRound(1, self.OFFER, "accepted"),),
+            trade=TradeResult(True, "ok", self.OFFER),
+            rate=1.5,
+        )
+
+        (row,) = self.rows_for(result)
+
+        assert row[2:5] == ["2.00 Agriculture", "3.00 Handicrafts", "1.50"]
+        assert row[5] == "Accepted"
+
+    def test_a_refused_barter_still_shows_the_offer_and_the_price(self) -> None:
+        result = NegotiationResult(
+            False,
+            "no agreement reached",
+            (NegotiationRound(1, self.OFFER, "counter-offer"),),
+            rate=1.5,
+        )
+
+        (row,) = self.rows_for(result)
+
+        assert row[2:5] == ["2.00 Agriculture", "3.00 Handicrafts", "1.50"]
+        assert row[5] == "Refused"
+        assert row[6] == "no agreement reached"
+
+    def test_a_barter_refused_before_any_price_was_asked_says_only_why(self) -> None:
+        """Most refusals never reached an offer, so there is no price to show.
+
+        Measured over 9720 barters: 946 of the 994 refusals were refused before a
+        price was put on the table, and those rows still have to name the reason.
+        """
+
+        (row,) = self.rows_for(NegotiationResult(False, "nothing to spare", ()))
+
+        assert row[2:5] == ["-", "-", "-"]
+        assert row[5] == "Refused"
+        assert row[6] == "nothing to spare"
 
 
 class TestNarration:

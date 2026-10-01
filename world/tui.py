@@ -306,7 +306,9 @@ class WorldApp(App[None]):
         self.world_settings_table.add_columns("Setting", "Value")
         self.stock_table.add_columns("Village", *(goods.label for goods in ALL_GOODS), "Total")
         self.flow_table.add_columns("Measure", *(goods.label for goods in ALL_GOODS), "Total")
-        self.trade_table.add_columns("From", "To", "Gave", "Got", "Rate", "Note")
+        self.trade_table.add_columns(
+            "From", "To", "Gave", "Got", "Rate", "Result", "Reason"
+        )
         self.summary.add_columns("Measure", "Value")
         self._refresh()
         if self.remaining > 0:
@@ -590,19 +592,23 @@ class WorldApp(App[None]):
         if self.last_report is None:
             return
         for event in self.last_report.trades:
-            trade = event.result.trade
-            offer = trade.offer if trade is not None else None
-            if event.result.agreed and offer is not None:
+            result = event.result
+            offer = result.rounds[-1].offer if result.rounds else None
+            if offer is None:
                 table.add_row(
-                    event.proposer,
-                    event.responder,
-                    f"{offer.offer_quantity:.2f} {offer.offer_goods.label}",
-                    f"{offer.want_quantity:.2f} {offer.want_goods.label}",
-                    f"{event.result.rate:.2f}",
-                    "",
+                    event.proposer, event.responder, "-", "-", "-", "Refused", result.reason
                 )
-            else:
-                table.add_row(event.proposer, event.responder, "-", "-", "-", event.result.reason)
+                continue
+            rate = offer.want_quantity / offer.offer_quantity
+            table.add_row(
+                event.proposer,
+                event.responder,
+                f"{offer.offer_quantity:.2f} {offer.offer_goods.label}",
+                f"{offer.want_quantity:.2f} {offer.want_goods.label}",
+                f"{rate:.2f}",
+                "Accepted" if result.agreed else "Refused",
+                result.reason,
+            )
 
 
 def _amount(value: float) -> str:
